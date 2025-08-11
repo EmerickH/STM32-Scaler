@@ -4,7 +4,7 @@
 # Copyright (c) 2020 v0idv0id - Martin Willner - lvslinux@gmail.com
 
 import getopt, sys, itertools
-import threading, time
+import threading, time, math
 
 bit="16"
 TIM_BASE_CLOCK=84000000
@@ -12,7 +12,7 @@ TARGET_F = 42000000
 error=0.0
 max_results=-1
 DUTY=50.0
-threads_count=20
+threads_count=1
 
 cmd_args = sys.argv
 arg_list = cmd_args[1:]
@@ -92,11 +92,13 @@ threads = []
 threadLock = threading.Lock()
 pscLock = threading.Lock()
 nextPsc = 0
+maxPsc = 0
 exited_threads = 0
 
 def search_thread(threads_exit):
     global explored_count
     global nextPsc
+    global maxPsc
     global results
     global exited_threads
 
@@ -105,7 +107,7 @@ def search_thread(threads_exit):
             break
 
         with pscLock:
-            if(nextPsc > TARGET_PSC_MAX["16"]):
+            if(nextPsc > maxPsc):
                 break
             psc = nextPsc
             nextPsc += 1
@@ -138,6 +140,7 @@ def search_thread(threads_exit):
     exited_threads += 1
 
 def search_arr_psc():
+    global maxPsc
     right = TIM_BASE_CLOCK / TARGET_F
     # right=int(right)
     print("(arr+1)*(psc+1) = TIM_BASE_CLOCK / TARGET_F")
@@ -149,6 +152,10 @@ def search_arr_psc():
             print("You must use an --error= value >0 for this frequency!")
             quit()
     print( "Calculate...")
+
+    maxPsc = math.ceil(TIM_BASE_CLOCK / (TARGET_F * (100 - error) / 100) - 1)
+    if maxPsc > TARGET_PSC_MAX["16"]:
+        maxPsc = TARGET_PSC_MAX["16"]
 
     threads_exit = threading.Event()
 
@@ -162,7 +169,7 @@ def search_arr_psc():
     # Wait for all threads to finish
     try:
         while exited_threads < threads_count:
-            percent = (nextPsc-threads_count)/TARGET_PSC_MAX["16"]*100
+            percent = (nextPsc-threads_count)/(maxPsc+1)*100
             sys.stdout.write(f'{next(spinner)} {percent:.1f} % - {len(results)} results found')
             sys.stdout.flush()
             time.sleep(0.2)
