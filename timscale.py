@@ -3,7 +3,7 @@
 # MIT License
 # Copyright (c) 2020 v0idv0id - Martin Willner - lvslinux@gmail.com
 
-import getopt, sys, itertools, math
+import getopt, sys, itertools
 import threading, time
 
 bit="16"
@@ -16,8 +16,8 @@ threads_count=20
 
 cmd_args = sys.argv
 arg_list = cmd_args[1:]
-soptions="hb:c:e:f:m:t:d:"
-loptions=["help","bits=","clk=","error=","freq=","max=","time=","duty="]
+soptions="hb:c:e:f:m:t:d:r:"
+loptions=["help","bits=","clk=","error=","freq=","max=","time=","duty=","threads="]
 spinner = itertools.cycle(['-', '/', '|', '\\'])
 
 
@@ -40,6 +40,8 @@ for current_argument, current_value in arguments:
         TARGET_F=float(1.0/float(current_value))
     elif current_argument in ("-d","--duty"):
         DUTY=float(current_value)
+    elif current_argument in ("-r","--threads"):
+        threads_count=int(current_value)
     elif current_argument in ("-h","--help"):
         print("-f VALUE --freq=VALUE : Calculte ARR and PSC for this FRQUENCY [Hz]!")
         print("or")
@@ -49,6 +51,7 @@ for current_argument, current_value in arguments:
         print("-c VALUE --clk=VALUE : Timer base clock in [Hz]")
         print("-e VALUE --error=VALUE : Accepted error in [%]")
         print("-d VALUE --duty=VALUE : Calculate the CRRx value for this duty cycle [%]")
+        print("-r VALUE --threads=VALUE : Set the number of threads to calculate with")
 
 
 
@@ -87,21 +90,44 @@ results = []
 
 threads = []
 threadLock = threading.Lock()
-explored_count = 0
+pscLock = threading.Lock()
+nextPsc = 0
+exited_threads = 0
 
-def search_thread(start, end, threads_exit):
+def search_thread(threads_exit):
     global explored_count
+    global nextPsc
     global results
-    #results_local = []
-    for psc in range(start, end):
-        #sys.stdout.write(next(spinner))
-        #sys.stdout.flush()
+    global exited_threads
+
+    while True:
+        if threads_exit.is_set():
+            break
+
+        with pscLock:
+            if(nextPsc > TARGET_PSC_MAX["16"]):
+                break
+            psc = nextPsc
+            nextPsc += 1
+
+        if TIM_BASE_CLOCK  % (psc+1) != 0:
+            continue
         x = (TIM_BASE_CLOCK / (TARGET_F * (psc+1))) -1
-        if TIM_BASE_CLOCK  % (psc+1) == 0 and x <= TARGET_ARR_MAX[bit]:
+        if x > TARGET_ARR_MAX[bit]:
+            continue
+
+        if error == 0:
+            if x != int(x):
+                continue
+            left = (x + 1) * (psc + 1)
+            freq = TIM_BASE_CLOCK / left
+            duty_val = int(x / (100.0 / DUTY))
+            with threadLock:
+                results.append({"psc": psc,"arr": int(x),"freq": freq,"pererror": 0,"delta": 0,"duty": duty_val})
+        else:
             for arr in range(0,TARGET_ARR_MAX[bit]+1):
                 if threads_exit.is_set():
-                    return
-                explored_count += 1
+                    break
                 left = (arr+1)*(psc+1)
                 pererror = abs((1- (TARGET_F / (TIM_BASE_CLOCK/left)))*100)
                 if pererror <= error:
@@ -109,8 +135,7 @@ def search_thread(start, end, threads_exit):
                     d = int(arr/(100.0/DUTY))
                     with threadLock:
                         results.append({"psc":psc,"arr":arr,"left":left,"freq":freq,"pererror":pererror,"delta":abs(freq-TARGET_F),"duty":d})
-
-        #sys.stdout.write('\b')
+    exited_threads += 1
 
 def search_arr_psc():
     right = TIM_BASE_CLOCK / TARGET_F
@@ -125,38 +150,22 @@ def search_arr_psc():
             quit()
     print( "Calculate...")
 
-    threads_range = math.ceil((TARGET_PSC_MAX["16"] + 1) / threads_count)
-    thread_start = 0
     threads_exit = threading.Event()
 
     for i in range(0,threads_count):
-        thread_end = thread_start + threads_range
-        if thread_end > TARGET_PSC_MAX["16"] + 1:
-            thread_end = TARGET_PSC_MAX["16"] + 1
-
         # Using `args` to pass positional arguments and `kwargs` for keyword arguments
-        t = threading.Thread(target=search_thread, args=(thread_start,thread_end,threads_exit))
+        t = threading.Thread(target=search_thread, args=(threads_exit,))
         threads.append(t)
-        thread_start = thread_end
     # Start each thread
     for t in threads:
         t.start()
     # Wait for all threads to finish
     try:
-        running = 999
-        while running:
-            sys.stdout.write(next(spinner))
-            sys.stdout.write(" " + str(len(results)) + " results founds ")
-            sys.stdout.write(str(explored_count))
-            sys.stdout.write(" - " + str(running))
+        while exited_threads < threads_count:
+            percent = (nextPsc-threads_count)/TARGET_PSC_MAX["16"]*100
+            sys.stdout.write(f'{next(spinner)} {percent:.1f} % - {len(results)} results found')
             sys.stdout.flush()
             time.sleep(0.2)
-
-            running = 0
-            for t in threads:
-                if t.is_alive():
-                    running += 1
-
             print ("\033[A")
     except KeyboardInterrupt:
         threads_exit.set()
