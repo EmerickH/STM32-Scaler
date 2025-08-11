@@ -3,7 +3,8 @@
 # MIT License
 # Copyright (c) 2020 v0idv0id - Martin Willner - lvslinux@gmail.com
 
-import getopt, sys, itertools
+import getopt, sys, itertools, math
+import threading, time
 
 bit="16"
 TIM_BASE_CLOCK=84000000
@@ -11,6 +12,7 @@ TARGET_F = 42000000
 error=0.0
 max_results=-1
 DUTY=50.0
+threads_count=20
 
 cmd_args = sys.argv
 arg_list = cmd_args[1:]
@@ -72,9 +74,9 @@ print("*** TARGET_FREQUENCY:",TARGET_F, "[Hz]")
 print("*** ERROR:",error,"[%]")
 print("*** DUTY:",DUTY,"[%]")
 
-print("**> MAX:",TARGET_UPDATE_F_MAX," [Hz]") 
+print("**> MAX:",TARGET_UPDATE_F_MAX," [Hz]")
 #, "[1/s]\n", secondlist( 1/TARGET_UPDATE_F_MAX))
-print("**> MIN:",TARGET_UPDATE_F_MIN," [Hz]")  
+print("**> MIN:",TARGET_UPDATE_F_MIN," [Hz]")
 #, "[1/s]\n",secondlist(1/TARGET_UPDATE_F_MIN))
 
 if TARGET_F > TARGET_UPDATE_F_MAX or  TARGET_F < TARGET_UPDATE_F_MIN:
@@ -82,6 +84,33 @@ if TARGET_F > TARGET_UPDATE_F_MAX or  TARGET_F < TARGET_UPDATE_F_MIN:
     quit()
 
 results = []
+
+threads = []
+threadLock = threading.Lock()
+explored_count = 0
+
+def search_thread(start, end, threads_exit):
+    global explored_count
+    global results
+    #results_local = []
+    for psc in range(start, end):
+        #sys.stdout.write(next(spinner))
+        #sys.stdout.flush()
+        x = (TIM_BASE_CLOCK / (TARGET_F * (psc+1))) -1
+        if TIM_BASE_CLOCK  % (psc+1) == 0 and x <= TARGET_ARR_MAX[bit]:
+            for arr in range(0,TARGET_ARR_MAX[bit]+1):
+                if threads_exit.is_set():
+                    return
+                explored_count += 1
+                left = (arr+1)*(psc+1)
+                pererror = abs((1- (TARGET_F / (TIM_BASE_CLOCK/left)))*100)
+                if pererror <= error:
+                    freq = TIM_BASE_CLOCK/left
+                    d = int(arr/(100.0/DUTY))
+                    with threadLock:
+                        results.append({"psc":psc,"arr":arr,"left":left,"freq":freq,"pererror":pererror,"delta":abs(freq-TARGET_F),"duty":d})
+
+        #sys.stdout.write('\b')
 
 def search_arr_psc():
     right = TIM_BASE_CLOCK / TARGET_F
@@ -95,19 +124,47 @@ def search_arr_psc():
             print("You must use an --error= value >0 for this frequency!")
             quit()
     print( "Calculate...")
-    for psc in range(0,TARGET_PSC_MAX["16"]+1):
-        sys.stdout.write(next(spinner))
-        sys.stdout.flush()
-        x = (TIM_BASE_CLOCK / (TARGET_F * (psc+1))) -1 
-        if TIM_BASE_CLOCK  % (psc+1) == 0 and x <= TARGET_ARR_MAX[bit]:
-            for arr in range(0,TARGET_ARR_MAX[bit]+1):
-                left = (arr+1)*(psc+1) 
-                pererror = abs((1- (TARGET_F / (TIM_BASE_CLOCK/left)))*100)
-                if pererror <= error:
-                    freq = TIM_BASE_CLOCK/left
-                    d = int(arr/(100.0/DUTY))
-                    results.append({"psc":psc,"arr":arr,"left":left,"freq":freq,"pererror":pererror,"delta":abs(freq-TARGET_F),"duty":d})
-        sys.stdout.write('\b')    
+
+    threads_range = math.ceil((TARGET_PSC_MAX["16"] + 1) / threads_count)
+    thread_start = 0
+    threads_exit = threading.Event()
+
+    for i in range(0,threads_count):
+        thread_end = thread_start + threads_range
+        if thread_end > TARGET_PSC_MAX["16"] + 1:
+            thread_end = TARGET_PSC_MAX["16"] + 1
+
+        # Using `args` to pass positional arguments and `kwargs` for keyword arguments
+        t = threading.Thread(target=search_thread, args=(thread_start,thread_end,threads_exit))
+        threads.append(t)
+        thread_start = thread_end
+    # Start each thread
+    for t in threads:
+        t.start()
+    # Wait for all threads to finish
+    try:
+        running = 999
+        while running:
+            sys.stdout.write(next(spinner))
+            sys.stdout.write(" " + str(len(results)) + " results founds ")
+            sys.stdout.write(str(explored_count))
+            sys.stdout.write(" - " + str(running))
+            sys.stdout.flush()
+            time.sleep(0.2)
+
+            running = 0
+            for t in threads:
+                if t.is_alive():
+                    running += 1
+
+            print ("\033[A")
+    except KeyboardInterrupt:
+        threads_exit.set()
+        print("Interrupted")
+        for t in threads:
+            t.join()
+
+
 
 def secondlist(x):
     s = x
